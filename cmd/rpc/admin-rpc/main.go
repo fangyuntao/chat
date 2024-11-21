@@ -15,56 +15,12 @@
 package main
 
 import (
-	"flag"
-	"fmt"
-	"math/rand"
-	"time"
-
-	"github.com/OpenIMSDK/chat/pkg/common/chatrpcstart"
-	"github.com/OpenIMSDK/chat/pkg/common/version"
-	"github.com/OpenIMSDK/chat/tools/component"
-	"github.com/OpenIMSDK/tools/log"
-
-	"github.com/OpenIMSDK/chat/internal/rpc/admin"
-	"github.com/OpenIMSDK/chat/pkg/common/config"
+	"github.com/openimsdk/chat/pkg/common/cmd"
+	"github.com/openimsdk/tools/system/program"
 )
 
 func main() {
-	rand.Seed(time.Now().UnixNano())
-
-	configFile, rpcPort, hide, showVersion, err := config.FlagParse()
-	if err != nil {
-		panic(err)
-	}
-
-	// Check if the version flag was set
-	if showVersion {
-		ver := version.Get()
-		fmt.Println("Version:", ver.GitVersion)
-		fmt.Println("Git Commit:", ver.GitCommit)
-		fmt.Println("Build Date:", ver.BuildDate)
-		fmt.Println("Go Version:", ver.GoVersion)
-		fmt.Println("Compiler:", ver.Compiler)
-		fmt.Println("Platform:", ver.Platform)
-		return
-	}
-
-	flag.Parse()
-	err = component.ComponentCheck(configFile, hide)
-	if err != nil {
-		return
-	}
-	if err := config.InitConfig(configFile); err != nil {
-		panic(err)
-	}
-	if config.Config.Envs.Discovery == "k8s" {
-		rpcPort = 80
-	}
-	if err := log.InitFromConfig("chat.log", "admin-rpc", *config.Config.Log.RemainLogLevel, *config.Config.Log.IsStdout, *config.Config.Log.IsJson, *config.Config.Log.StorageLocation, *config.Config.Log.RemainRotationCount, *config.Config.Log.RotationTime); err != nil {
-		panic(err)
-	}
-	err = chatrpcstart.Start(rpcPort, config.Config.RpcRegisterName.OpenImAdminName, 0, admin.Start)
-	if err != nil {
-		panic(err)
+	if err := cmd.NewAdminRpcCmd().Exec(); err != nil {
+		program.ExitWithError(err)
 	}
 }

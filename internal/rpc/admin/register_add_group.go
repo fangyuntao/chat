@@ -16,40 +16,37 @@ package admin
 
 import (
 	"context"
-	"strings"
+	"github.com/openimsdk/tools/utils/datautil"
 	"time"
 
-	"github.com/OpenIMSDK/tools/errs"
-	"github.com/OpenIMSDK/tools/log"
-	"github.com/OpenIMSDK/tools/utils"
+	"github.com/openimsdk/tools/errs"
 
-	admin2 "github.com/OpenIMSDK/chat/pkg/common/db/table/admin"
-	"github.com/OpenIMSDK/chat/pkg/common/mctx"
-	"github.com/OpenIMSDK/chat/pkg/proto/admin"
+	admindb "github.com/openimsdk/chat/pkg/common/db/table/admin"
+	"github.com/openimsdk/chat/pkg/common/mctx"
+	"github.com/openimsdk/chat/pkg/protocol/admin"
 )
 
 func (o *adminServer) AddDefaultGroup(ctx context.Context, req *admin.AddDefaultGroupReq) (*admin.AddDefaultGroupResp, error) {
-	defer log.ZDebug(ctx, "return")
 	if _, err := mctx.CheckAdmin(ctx); err != nil {
 		return nil, err
 	}
 	if len(req.GroupIDs) == 0 {
-		return nil, errs.ErrArgs.Wrap("group ids is empty")
+		return nil, errs.ErrArgs.WrapMsg("group ids is empty")
 	}
-	if utils.Duplicate(req.GroupIDs) {
-		return nil, errs.ErrArgs.Wrap("group ids is duplicate")
+	if datautil.Duplicate(req.GroupIDs) {
+		return nil, errs.ErrArgs.WrapMsg("group ids is duplicate")
 	}
 	exists, err := o.Database.FindDefaultGroup(ctx, req.GroupIDs)
 	if err != nil {
 		return nil, err
 	}
 	if len(exists) > 0 {
-		return nil, errs.ErrGroupIDExisted.Wrap(strings.Join(exists, ", "))
+		return nil, errs.ErrDuplicateKey.WrapMsg("group id existed", "groupID", exists)
 	}
 	now := time.Now()
-	ms := make([]*admin2.RegisterAddGroup, 0, len(req.GroupIDs))
+	ms := make([]*admindb.RegisterAddGroup, 0, len(req.GroupIDs))
 	for _, groupID := range req.GroupIDs {
-		ms = append(ms, &admin2.RegisterAddGroup{
+		ms = append(ms, &admindb.RegisterAddGroup{
 			GroupID:    groupID,
 			CreateTime: now,
 		})
@@ -61,27 +58,26 @@ func (o *adminServer) AddDefaultGroup(ctx context.Context, req *admin.AddDefault
 }
 
 func (o *adminServer) DelDefaultGroup(ctx context.Context, req *admin.DelDefaultGroupReq) (*admin.DelDefaultGroupResp, error) {
-	defer log.ZDebug(ctx, "return")
 	if _, err := mctx.CheckAdmin(ctx); err != nil {
 		return nil, err
 	}
 	if len(req.GroupIDs) == 0 {
-		return nil, errs.ErrArgs.Wrap("group ids is empty")
+		return nil, errs.ErrArgs.WrapMsg("group ids is empty")
 	}
-	if utils.Duplicate(req.GroupIDs) {
-		return nil, errs.ErrArgs.Wrap("group ids is duplicate")
+	if datautil.Duplicate(req.GroupIDs) {
+		return nil, errs.ErrArgs.WrapMsg("group ids is duplicate")
 	}
 	exists, err := o.Database.FindDefaultGroup(ctx, req.GroupIDs)
 	if err != nil {
 		return nil, err
 	}
-	if ids := utils.Single(req.GroupIDs, exists); len(ids) > 0 {
-		return nil, errs.ErrGroupIDNotFound.Wrap(strings.Join(ids, ", "))
+	if ids := datautil.Single(req.GroupIDs, exists); len(ids) > 0 {
+		return nil, errs.ErrRecordNotFound.WrapMsg("group id not found", "groupID", ids)
 	}
 	now := time.Now()
-	ms := make([]*admin2.RegisterAddGroup, 0, len(req.GroupIDs))
+	ms := make([]*admindb.RegisterAddGroup, 0, len(req.GroupIDs))
 	for _, groupID := range req.GroupIDs {
-		ms = append(ms, &admin2.RegisterAddGroup{
+		ms = append(ms, &admindb.RegisterAddGroup{
 			GroupID:    groupID,
 			CreateTime: now,
 		})
@@ -93,7 +89,6 @@ func (o *adminServer) DelDefaultGroup(ctx context.Context, req *admin.DelDefault
 }
 
 func (o *adminServer) FindDefaultGroup(ctx context.Context, req *admin.FindDefaultGroupReq) (*admin.FindDefaultGroupResp, error) {
-	defer log.ZDebug(ctx, "return")
 	if _, _, err := mctx.Check(ctx); err != nil {
 		return nil, err
 	}
@@ -105,13 +100,12 @@ func (o *adminServer) FindDefaultGroup(ctx context.Context, req *admin.FindDefau
 }
 
 func (o *adminServer) SearchDefaultGroup(ctx context.Context, req *admin.SearchDefaultGroupReq) (*admin.SearchDefaultGroupResp, error) {
-	defer log.ZDebug(ctx, "return")
 	if _, err := mctx.CheckAdmin(ctx); err != nil {
 		return nil, err
 	}
-	total, infos, err := o.Database.SearchDefaultGroup(ctx, req.Keyword, req.Pagination.PageNumber, req.Pagination.ShowNumber)
+	total, infos, err := o.Database.SearchDefaultGroup(ctx, req.Keyword, req.Pagination)
 	if err != nil {
 		return nil, err
 	}
-	return &admin.SearchDefaultGroupResp{Total: total, GroupIDs: utils.Slice(infos, func(info *admin2.RegisterAddGroup) string { return info.GroupID })}, nil
+	return &admin.SearchDefaultGroupResp{Total: uint32(total), GroupIDs: datautil.Slice(infos, func(info *admindb.RegisterAddGroup) string { return info.GroupID })}, nil
 }

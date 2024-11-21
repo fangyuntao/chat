@@ -20,40 +20,38 @@ import (
 	"strings"
 	"time"
 
-	"github.com/OpenIMSDK/tools/log"
+	"github.com/openimsdk/tools/utils/datautil"
 
-	"github.com/OpenIMSDK/tools/errs"
-	"github.com/OpenIMSDK/tools/utils"
+	"github.com/openimsdk/tools/errs"
 
-	admin2 "github.com/OpenIMSDK/chat/pkg/common/db/table/admin"
-	"github.com/OpenIMSDK/chat/pkg/common/mctx"
-	"github.com/OpenIMSDK/chat/pkg/eerrs"
-	"github.com/OpenIMSDK/chat/pkg/proto/admin"
+	admindb "github.com/openimsdk/chat/pkg/common/db/table/admin"
+	"github.com/openimsdk/chat/pkg/common/mctx"
+	"github.com/openimsdk/chat/pkg/eerrs"
+	"github.com/openimsdk/chat/pkg/protocol/admin"
 )
 
 func (o *adminServer) AddInvitationCode(ctx context.Context, req *admin.AddInvitationCodeReq) (*admin.AddInvitationCodeResp, error) {
-	defer log.ZDebug(ctx, "return")
 	if _, err := mctx.CheckAdmin(ctx); err != nil {
 		return nil, err
 	}
 	if len(req.Codes) == 0 {
-		return nil, errs.ErrArgs.Wrap("codes is empty")
+		return nil, errs.ErrArgs.WrapMsg("codes is empty")
 	}
-	if utils.Duplicate(req.Codes) {
-		return nil, errs.ErrArgs.Wrap("codes is duplicate")
+	if datautil.Duplicate(req.Codes) {
+		return nil, errs.ErrArgs.WrapMsg("codes is duplicate")
 	}
 	irs, err := o.Database.FindInvitationRegister(ctx, req.Codes)
 	if err != nil {
 		return nil, err
 	}
 	if len(irs) > 0 {
-		ids := utils.Slice(irs, func(info *admin2.InvitationRegister) string { return info.InvitationCode })
-		return nil, errs.ErrArgs.Wrap("code existed " + strings.Join(ids, ", "))
+		ids := datautil.Slice(irs, func(info *admindb.InvitationRegister) string { return info.InvitationCode })
+		return nil, errs.ErrArgs.WrapMsg("code existed", "ids", ids)
 	}
 	now := time.Now()
-	codes := make([]*admin2.InvitationRegister, 0, len(req.Codes))
+	codes := make([]*admindb.InvitationRegister, 0, len(req.Codes))
 	for _, code := range req.Codes {
-		codes = append(codes, &admin2.InvitationRegister{
+		codes = append(codes, &admindb.InvitationRegister{
 			InvitationCode: code,
 			UsedByUserID:   "",
 			CreateTime:     now,
@@ -66,18 +64,17 @@ func (o *adminServer) AddInvitationCode(ctx context.Context, req *admin.AddInvit
 }
 
 func (o *adminServer) GenInvitationCode(ctx context.Context, req *admin.GenInvitationCodeReq) (*admin.GenInvitationCodeResp, error) {
-	defer log.ZDebug(ctx, "return")
 	if _, err := mctx.CheckAdmin(ctx); err != nil {
 		return nil, err
 	}
 	if req.Num <= 0 || req.Len <= 0 {
-		return nil, errs.ErrArgs.Wrap("num or len <= 0")
+		return nil, errs.ErrArgs.WrapMsg("num or len <= 0")
 	}
 	if len(req.Chars) == 0 {
 		req.Chars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 	}
 	now := time.Now()
-	invitationRegisters := make([]*admin2.InvitationRegister, 0, req.Num)
+	invitationRegisters := make([]*admindb.InvitationRegister, 0, req.Num)
 	codes := make([]string, 0, req.Num)
 	for i := int32(0); i < req.Num; i++ {
 		buf := make([]byte, req.Len)
@@ -86,22 +83,22 @@ func (o *adminServer) GenInvitationCode(ctx context.Context, req *admin.GenInvit
 			buf[i] = req.Chars[b%byte(len(req.Chars))]
 		}
 		codes = append(codes, string(buf))
-		invitationRegisters = append(invitationRegisters, &admin2.InvitationRegister{
+		invitationRegisters = append(invitationRegisters, &admindb.InvitationRegister{
 			InvitationCode: string(buf),
 			UsedByUserID:   "",
 			CreateTime:     now,
 		})
 	}
-	if utils.Duplicate(codes) {
-		return nil, errs.ErrArgs.Wrap("gen duplicate codes")
+	if datautil.Duplicate(codes) {
+		return nil, errs.ErrArgs.WrapMsg("gen duplicate codes")
 	}
 	irs, err := o.Database.FindInvitationRegister(ctx, codes)
 	if err != nil {
 		return nil, err
 	}
 	if len(irs) > 0 {
-		ids := utils.Single(codes, utils.Slice(irs, func(ir *admin2.InvitationRegister) string { return ir.InvitationCode }))
-		return nil, errs.ErrArgs.Wrap(strings.Join(ids, ", "))
+		ids := datautil.Single(codes, datautil.Slice(irs, func(ir *admindb.InvitationRegister) string { return ir.InvitationCode }))
+		return nil, errs.ErrArgs.WrapMsg(strings.Join(ids, ", "))
 	}
 	if err := o.Database.CreatInvitationRegister(ctx, invitationRegisters); err != nil {
 		return nil, err
@@ -110,12 +107,11 @@ func (o *adminServer) GenInvitationCode(ctx context.Context, req *admin.GenInvit
 }
 
 func (o *adminServer) FindInvitationCode(ctx context.Context, req *admin.FindInvitationCodeReq) (*admin.FindInvitationCodeResp, error) {
-	defer log.ZDebug(ctx, "return")
 	if _, _, err := mctx.Check(ctx); err != nil {
 		return nil, err
 	}
 	if len(req.Codes) == 0 {
-		return nil, errs.ErrArgs.Wrap("codes is empty")
+		return nil, errs.ErrArgs.WrapMsg("codes is empty")
 	}
 	invitationRegisters, err := o.Database.FindInvitationRegister(ctx, req.Codes)
 	if err != nil {
@@ -144,7 +140,6 @@ func (o *adminServer) FindInvitationCode(ctx context.Context, req *admin.FindInv
 }
 
 func (o *adminServer) UseInvitationCode(ctx context.Context, req *admin.UseInvitationCodeReq) (*admin.UseInvitationCodeResp, error) {
-	defer log.ZDebug(ctx, "return")
 	if _, _, err := mctx.Check(ctx); err != nil {
 		return nil, err
 	}
@@ -165,23 +160,22 @@ func (o *adminServer) UseInvitationCode(ctx context.Context, req *admin.UseInvit
 }
 
 func (o *adminServer) DelInvitationCode(ctx context.Context, req *admin.DelInvitationCodeReq) (*admin.DelInvitationCodeResp, error) {
-	defer log.ZDebug(ctx, "return")
 	if _, err := mctx.CheckAdmin(ctx); err != nil {
 		return nil, err
 	}
 	if len(req.Codes) == 0 {
-		return nil, errs.ErrArgs.Wrap("codes is empty")
+		return nil, errs.ErrArgs.WrapMsg("codes is empty")
 	}
-	if utils.Duplicate(req.Codes) {
-		return nil, errs.ErrArgs.Wrap("codes is duplicate")
+	if datautil.Duplicate(req.Codes) {
+		return nil, errs.ErrArgs.WrapMsg("codes is duplicate")
 	}
 	irs, err := o.Database.FindInvitationRegister(ctx, req.Codes)
 	if err != nil {
 		return nil, err
 	}
 	if len(irs) != len(req.Codes) {
-		ids := utils.Single(req.Codes, utils.Slice(irs, func(ir *admin2.InvitationRegister) string { return ir.InvitationCode }))
-		return nil, errs.ErrArgs.Wrap("code not found " + strings.Join(ids, ", "))
+		ids := datautil.Single(req.Codes, datautil.Slice(irs, func(ir *admindb.InvitationRegister) string { return ir.InvitationCode }))
+		return nil, errs.ErrArgs.WrapMsg("code not found " + strings.Join(ids, ", "))
 	}
 	if err := o.Database.DelInvitationRegister(ctx, req.Codes); err != nil {
 		return nil, err
@@ -190,11 +184,10 @@ func (o *adminServer) DelInvitationCode(ctx context.Context, req *admin.DelInvit
 }
 
 func (o *adminServer) SearchInvitationCode(ctx context.Context, req *admin.SearchInvitationCodeReq) (*admin.SearchInvitationCodeResp, error) {
-	defer log.ZDebug(ctx, "return")
 	if _, err := mctx.CheckAdmin(ctx); err != nil {
 		return nil, err
 	}
-	total, list, err := o.Database.SearchInvitationRegister(ctx, req.Keyword, req.Status, req.UserIDs, req.Codes, req.Pagination.PageNumber, req.Pagination.ShowNumber)
+	total, list, err := o.Database.SearchInvitationRegister(ctx, req.Keyword, req.Status, req.UserIDs, req.Codes, req.Pagination)
 	if err != nil {
 		return nil, err
 	}
@@ -218,7 +211,7 @@ func (o *adminServer) SearchInvitationCode(ctx context.Context, req *admin.Searc
 		})
 	}
 	return &admin.SearchInvitationCodeResp{
-		Total: total,
+		Total: uint32(total),
 		List:  invitationRegisters,
 	}, nil
 }

@@ -16,71 +16,21 @@ package admin
 
 import (
 	"context"
-	"crypto/md5"
-	"encoding/hex"
 	"fmt"
-	"github.com/OpenIMSDK/chat/pkg/common/db/cache"
-	"github.com/OpenIMSDK/tools/discoveryregistry"
-	"github.com/OpenIMSDK/tools/errs"
-	"github.com/OpenIMSDK/tools/log"
-	"github.com/OpenIMSDK/tools/mcontext"
-	"github.com/OpenIMSDK/tools/utils"
-	"google.golang.org/grpc"
 	"math/rand"
 	"time"
 
-	"github.com/OpenIMSDK/chat/pkg/common/config"
-	"github.com/OpenIMSDK/chat/pkg/common/constant"
-	"github.com/OpenIMSDK/chat/pkg/common/db/database"
-	"github.com/OpenIMSDK/chat/pkg/common/db/dbutil"
-	admin2 "github.com/OpenIMSDK/chat/pkg/common/db/table/admin"
-	"github.com/OpenIMSDK/chat/pkg/common/dbconn"
-	"github.com/OpenIMSDK/chat/pkg/common/mctx"
-	"github.com/OpenIMSDK/chat/pkg/eerrs"
-	"github.com/OpenIMSDK/chat/pkg/proto/admin"
-	"github.com/OpenIMSDK/chat/pkg/rpclient/chat"
+	"github.com/openimsdk/tools/errs"
+	"github.com/openimsdk/tools/mcontext"
+	"github.com/openimsdk/tools/utils/datautil"
+
+	"github.com/openimsdk/chat/pkg/common/constant"
+	"github.com/openimsdk/chat/pkg/common/db/dbutil"
+	admindb "github.com/openimsdk/chat/pkg/common/db/table/admin"
+	"github.com/openimsdk/chat/pkg/common/mctx"
+	"github.com/openimsdk/chat/pkg/eerrs"
+	"github.com/openimsdk/chat/pkg/protocol/admin"
 )
-
-func Start(discov discoveryregistry.SvcDiscoveryRegistry, server *grpc.Server) error {
-	db, err := dbconn.NewGormDB()
-	if err != nil {
-		return err
-	}
-	tables := []any{
-		admin2.Admin{},
-		admin2.Applet{},
-		admin2.ForbiddenAccount{},
-		admin2.InvitationRegister{},
-		admin2.IPForbidden{},
-		admin2.LimitUserLoginIP{},
-		admin2.RegisterAddFriend{},
-		admin2.RegisterAddGroup{},
-		admin2.ClientConfig{},
-	}
-	if err := db.AutoMigrate(tables...); err != nil {
-		return err
-	}
-	rdb, err := cache.NewRedis()
-	if err != nil {
-		return err
-	}
-	if err := database.NewAdminDatabase(db, rdb).InitAdmin(context.Background()); err != nil {
-		return err
-	}
-	if err := discov.CreateRpcRootNodes([]string{config.Config.RpcRegisterName.OpenImAdminName, config.Config.RpcRegisterName.OpenImChatName}); err != nil {
-		panic(err)
-	}
-
-	admin.RegisterAdminServer(server, &adminServer{Database: database.NewAdminDatabase(db, rdb),
-		Chat: chat.NewChatClient(discov),
-	})
-	return nil
-}
-
-type adminServer struct {
-	Database database.AdminDatabaseInterface
-	Chat     *chat.ChatClient
-}
 
 func (o *adminServer) GetAdminInfo(ctx context.Context, req *admin.GetAdminInfoReq) (*admin.GetAdminInfoResp, error) {
 	userID, err := mctx.CheckAdmin(ctx)
@@ -108,11 +58,11 @@ func (o *adminServer) ChangeAdminPassword(ctx context.Context, req *admin.Change
 		return nil, err
 	}
 
-	if user.Password != o.passwordEncryption(req.CurrentPassword) {
-		return nil, errs.ErrInternalServer.Wrap("password error")
+	if user.Password != req.CurrentPassword {
+		return nil, errs.ErrInternalServer.WrapMsg("password error")
 	}
 
-	if err := o.Database.ChangePassword(ctx, req.UserID, o.passwordEncryption(req.NewPassword)); err != nil {
+	if err := o.Database.ChangePassword(ctx, req.UserID, req.NewPassword); err != nil {
 		return nil, err
 	}
 	return &admin.ChangeAdminPasswordResp{}, nil
@@ -125,10 +75,10 @@ func (o *adminServer) AddAdminAccount(ctx context.Context, req *admin.AddAdminAc
 
 	_, err := o.Database.GetAdmin(ctx, req.Account)
 	if err == nil {
-		return nil, errs.ErrRegisteredAlready.Wrap("the account is registered")
+		return nil, errs.ErrDuplicateKey.WrapMsg("the account is registered")
 	}
 
-	adm := &admin2.Admin{
+	adm := &admindb.Admin{
 		Account:    req.Account,
 		Password:   req.Password,
 		FaceURL:    req.FaceURL,
@@ -137,7 +87,7 @@ func (o *adminServer) AddAdminAccount(ctx context.Context, req *admin.AddAdminAc
 		Level:      80,
 		CreateTime: time.Now(),
 	}
-	if err = o.Database.AddAdminAccount(ctx, adm); err != nil {
+	if err = o.Database.AddAdminAccount(ctx, []*admindb.Admin{adm}); err != nil {
 		return nil, err
 	}
 	return &admin.AddAdminAccountResp{}, nil
@@ -148,8 +98,8 @@ func (o *adminServer) DelAdminAccount(ctx context.Context, req *admin.DelAdminAc
 		return nil, err
 	}
 
-	if utils.Duplicate(req.UserIDs) {
-		return nil, errs.ErrArgs.Wrap("user ids is duplicate")
+	if datautil.Duplicate(req.UserIDs) {
+		return nil, errs.ErrArgs.WrapMsg("user ids is duplicate")
 	}
 
 	for _, userID := range req.UserIDs {
@@ -158,8 +108,7 @@ func (o *adminServer) DelAdminAccount(ctx context.Context, req *admin.DelAdminAc
 			return nil, err
 		}
 		if superAdmin.Level == constant.AdvancedUserLevel {
-			str := fmt.Sprintf("%s is superAdminID", userID)
-			return nil, errs.ErrNoPermission.Wrap(str)
+			return nil, errs.ErrNoPermission.WrapMsg(fmt.Sprintf("%s is superAdminID", userID))
 		}
 	}
 
@@ -170,13 +119,11 @@ func (o *adminServer) DelAdminAccount(ctx context.Context, req *admin.DelAdminAc
 }
 
 func (o *adminServer) SearchAdminAccount(ctx context.Context, req *admin.SearchAdminAccountReq) (*admin.SearchAdminAccountResp, error) {
-	defer log.ZDebug(ctx, "return")
-
 	if err := o.CheckSuperAdmin(ctx); err != nil {
 		return nil, err
 	}
 
-	total, adminAccounts, err := o.Database.SearchAdminAccount(ctx, req.Pagination.PageNumber, req.Pagination.ShowNumber)
+	total, adminAccounts, err := o.Database.SearchAdminAccount(ctx, req.Pagination)
 	if err != nil {
 		return nil, err
 	}
@@ -192,7 +139,7 @@ func (o *adminServer) SearchAdminAccount(ctx context.Context, req *admin.SearchA
 		}
 		accounts = append(accounts, temp)
 	}
-	return &admin.SearchAdminAccountResp{Total: total, AdminAccounts: accounts}, nil
+	return &admin.SearchAdminAccountResp{Total: uint32(total), AdminAccounts: accounts}, nil
 }
 
 func (o *adminServer) AdminUpdateInfo(ctx context.Context, req *admin.AdminUpdateInfoReq) (*admin.AdminUpdateInfoResp, error) {
@@ -218,7 +165,7 @@ func (o *adminServer) AdminUpdateInfo(ctx context.Context, req *admin.AdminUpdat
 		resp.Nickname = req.Nickname.Value
 	}
 	if req.FaceURL == nil {
-		resp.Nickname = info.FaceURL
+		resp.FaceURL = info.FaceURL
 	} else {
 		resp.FaceURL = req.FaceURL.Value
 	}
@@ -228,7 +175,7 @@ func (o *adminServer) AdminUpdateInfo(ctx context.Context, req *admin.AdminUpdat
 func (o *adminServer) Login(ctx context.Context, req *admin.LoginReq) (*admin.LoginResp, error) {
 	a, err := o.Database.GetAdmin(ctx, req.Account)
 	if err != nil {
-		if dbutil.IsGormNotFound(err) {
+		if dbutil.IsDBNotFound(err) {
 			return nil, eerrs.ErrAccountNotFound.Wrap()
 		}
 		return nil, err
@@ -282,11 +229,6 @@ func (o *adminServer) genUserID() string {
 		}
 	}
 	return string(data)
-}
-
-func (o *adminServer) passwordEncryption(password string) string {
-	paswd := md5.Sum([]byte(password))
-	return hex.EncodeToString(paswd[:])
 }
 
 func (o *adminServer) CheckSuperAdmin(ctx context.Context) error {

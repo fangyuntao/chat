@@ -17,44 +17,63 @@ package admin
 import (
 	"context"
 
-	"github.com/OpenIMSDK/tools/log"
+	"github.com/redis/go-redis/v9"
 
-	"github.com/OpenIMSDK/chat/pkg/common/config"
-	"github.com/OpenIMSDK/chat/pkg/common/tokenverify"
-	"github.com/OpenIMSDK/chat/pkg/proto/admin"
+	"github.com/openimsdk/chat/pkg/eerrs"
+	adminpb "github.com/openimsdk/chat/pkg/protocol/admin"
+	"github.com/openimsdk/tools/log"
 )
 
-func (o *adminServer) CreateToken(ctx context.Context, req *admin.CreateTokenReq) (*admin.CreateTokenResp, error) {
-	defer log.ZDebug(ctx, "return")
-	token, err := tokenverify.CreateToken(req.UserID, req.UserType, *config.Config.TokenPolicy.Expire)
+func (o *adminServer) CreateToken(ctx context.Context, req *adminpb.CreateTokenReq) (*adminpb.CreateTokenResp, error) {
+	token, expire, err := o.Token.CreateToken(req.UserID, req.UserType)
+
 	if err != nil {
 		return nil, err
 	}
-	err = o.Database.CacheToken(ctx, req.UserID, token)
+	err = o.Database.CacheToken(ctx, req.UserID, token, expire)
 	if err != nil {
 		return nil, err
 	}
-	return &admin.CreateTokenResp{
+	return &adminpb.CreateTokenResp{
 		Token: token,
 	}, nil
 }
 
-func (*adminServer) ParseToken(ctx context.Context, req *admin.ParseTokenReq) (*admin.ParseTokenResp, error) {
-	userID, userType, err := tokenverify.GetToken(req.Token)
+func (o *adminServer) ParseToken(ctx context.Context, req *adminpb.ParseTokenReq) (*adminpb.ParseTokenResp, error) {
+	userID, userType, err := o.Token.GetToken(req.Token)
 	if err != nil {
 		return nil, err
 	}
-	return &admin.ParseTokenResp{
+	m, err := o.Database.GetTokens(ctx, userID)
+	if err != nil && err != redis.Nil {
+		return nil, err
+	}
+	if len(m) == 0 {
+		return nil, eerrs.ErrTokenNotExist.Wrap()
+	}
+	if _, ok := m[req.Token]; !ok {
+		return nil, eerrs.ErrTokenNotExist.Wrap()
+	}
+
+	return &adminpb.ParseTokenResp{
 		UserID:   userID,
 		UserType: userType,
 	}, nil
 }
 
-func (o *adminServer) GetUserToken(ctx context.Context, req *admin.GetUserTokenReq) (*admin.GetUserTokenResp, error) {
+func (o *adminServer) GetUserToken(ctx context.Context, req *adminpb.GetUserTokenReq) (*adminpb.GetUserTokenResp, error) {
 	tokensMap, err := o.Database.GetTokens(ctx, req.UserID)
 	if err != nil {
 		return nil, err
 	}
+	return &adminpb.GetUserTokenResp{TokensMap: tokensMap}, nil
+}
 
-	return &admin.GetUserTokenResp{TokensMap: tokensMap}, nil
+func (o *adminServer) InvalidateToken(ctx context.Context, req *adminpb.InvalidateTokenReq) (*adminpb.InvalidateTokenResp, error) {
+	err := o.Database.DeleteToken(ctx, req.UserID)
+	if err != nil && err != redis.Nil {
+		return nil, err
+	}
+	log.ZDebug(ctx, "delete token from redis", "userID", req.UserID)
+	return &adminpb.InvalidateTokenResp{}, nil
 }

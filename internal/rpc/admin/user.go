@@ -16,40 +16,22 @@ package admin
 
 import (
 	"context"
+	"github.com/openimsdk/protocol/wrapperspb"
+	"github.com/openimsdk/tools/utils/datautil"
 	"strings"
 	"time"
 
-
-	"github.com/OpenIMSDK/chat/pkg/common/constant"
-	"github.com/OpenIMSDK/tools/log"
-
-	"github.com/OpenIMSDK/protocol/wrapperspb"
-	"github.com/OpenIMSDK/tools/errs"
-	"github.com/OpenIMSDK/tools/mcontext"
-	"github.com/OpenIMSDK/tools/utils"
-
-	"github.com/OpenIMSDK/chat/pkg/common/db/dbutil"
-	admin2 "github.com/OpenIMSDK/chat/pkg/common/db/table/admin"
-	"github.com/OpenIMSDK/chat/pkg/common/mctx"
-	"github.com/OpenIMSDK/chat/pkg/proto/admin"
-	"github.com/OpenIMSDK/chat/pkg/proto/chat"
+	"github.com/openimsdk/chat/pkg/common/db/dbutil"
+	admindb "github.com/openimsdk/chat/pkg/common/db/table/admin"
+	"github.com/openimsdk/chat/pkg/common/mctx"
+	"github.com/openimsdk/chat/pkg/protocol/admin"
+	"github.com/openimsdk/chat/pkg/protocol/chat"
+	"github.com/openimsdk/tools/errs"
+	"github.com/openimsdk/tools/mcontext"
 )
 
 func (o *adminServer) CancellationUser(ctx context.Context, req *admin.CancellationUserReq) (*admin.CancellationUserResp, error) {
-	defer log.ZDebug(ctx, "return")
-	_, err := mctx.CheckAdmin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	//imAdminID := config.GetIMAdmin(opUserID)
-	//IMtoken, err := o.CallerInterface.UserToken(ctx, imAdminID, constant2.AdminPlatformID)
-	//if err != nil {
-	//	return nil, err
-	//}
-	////ctx = context.WithValue(ctx, constant2.Token, IMtoken)
-	//
-	//err = o.CallerInterface.ForceOffLine(ctx, req.UserID, IMtoken)
-	if err != nil {
+	if _, err := mctx.CheckAdmin(ctx); err != nil {
 		return nil, err
 	}
 	empty := wrapperspb.String("")
@@ -61,48 +43,46 @@ func (o *adminServer) CancellationUser(ctx context.Context, req *admin.Cancellat
 }
 
 func (o *adminServer) BlockUser(ctx context.Context, req *admin.BlockUserReq) (*admin.BlockUserResp, error) {
-	defer log.ZDebug(ctx, "return")
 	_, err := mctx.CheckAdmin(ctx)
 	if err != nil {
 		return nil, err
 	}
 	_, err = o.Database.GetBlockInfo(ctx, req.UserID)
 	if err == nil {
-		return nil, errs.ErrArgs.Wrap("user already blocked")
-	} else if !dbutil.IsGormNotFound(err) {
+		return nil, errs.ErrArgs.WrapMsg("user already blocked")
+	} else if !dbutil.IsDBNotFound(err) {
 		return nil, err
 	}
 
-	t := &admin2.ForbiddenAccount{
+	t := &admindb.ForbiddenAccount{
 		UserID:         req.UserID,
 		Reason:         req.Reason,
 		OperatorUserID: mcontext.GetOpUserID(ctx),
 		CreateTime:     time.Now(),
 	}
-	if err := o.Database.BlockUser(ctx, []*admin2.ForbiddenAccount{t}); err != nil {
+	if err := o.Database.BlockUser(ctx, []*admindb.ForbiddenAccount{t}); err != nil {
 		return nil, err
 	}
 	return &admin.BlockUserResp{}, nil
 }
 
 func (o *adminServer) UnblockUser(ctx context.Context, req *admin.UnblockUserReq) (*admin.UnblockUserResp, error) {
-	defer log.ZDebug(ctx, "return")
 	if _, err := mctx.CheckAdmin(ctx); err != nil {
 		return nil, err
 	}
 	if len(req.UserIDs) == 0 {
-		return nil, errs.ErrArgs.Wrap("empty user id")
+		return nil, errs.ErrArgs.WrapMsg("empty user id")
 	}
-	if utils.Duplicate(req.UserIDs) {
-		return nil, errs.ErrArgs.Wrap("duplicate user id")
+	if datautil.Duplicate(req.UserIDs) {
+		return nil, errs.ErrArgs.WrapMsg("duplicate user id")
 	}
 	bs, err := o.Database.FindBlockInfo(ctx, req.UserIDs)
 	if err != nil {
 		return nil, err
 	}
 	if len(req.UserIDs) != len(bs) {
-		ids := utils.Single(req.UserIDs, utils.Slice(bs, func(info *admin2.ForbiddenAccount) string { return info.UserID }))
-		return nil, errs.ErrArgs.Wrap("user not blocked " + strings.Join(ids, ", "))
+		ids := datautil.Single(req.UserIDs, datautil.Slice(bs, func(info *admindb.ForbiddenAccount) string { return info.UserID }))
+		return nil, errs.ErrArgs.WrapMsg("user not blocked " + strings.Join(ids, ", "))
 	}
 	if err := o.Database.DelBlockUser(ctx, req.UserIDs); err != nil {
 		return nil, err
@@ -111,16 +91,14 @@ func (o *adminServer) UnblockUser(ctx context.Context, req *admin.UnblockUserReq
 }
 
 func (o *adminServer) SearchBlockUser(ctx context.Context, req *admin.SearchBlockUserReq) (*admin.SearchBlockUserResp, error) {
-	defer log.ZDebug(ctx, "return")
 	if _, err := mctx.CheckAdmin(ctx); err != nil {
 		return nil, err
 	}
-	log.ZInfo(ctx, "SearchBlockUser", "RpcOpUserID", ctx.Value(constant.RpcOpUserID), "RpcOpUserType", ctx.Value(constant.RpcOpUserType))
-	total, infos, err := o.Database.SearchBlockUser(ctx, req.Keyword, req.Pagination.PageNumber, req.Pagination.ShowNumber)
+	total, infos, err := o.Database.SearchBlockUser(ctx, req.Keyword, req.Pagination)
 	if err != nil {
 		return nil, err
 	}
-	userIDs := utils.Slice(infos, func(info *admin2.ForbiddenAccount) string { return info.UserID })
+	userIDs := datautil.Slice(infos, func(info *admindb.ForbiddenAccount) string { return info.UserID })
 	userMap, err := o.Chat.MapUserFullInfo(ctx, userIDs)
 	if err != nil {
 		return nil, err
@@ -144,11 +122,10 @@ func (o *adminServer) SearchBlockUser(ctx context.Context, req *admin.SearchBloc
 		}
 		users = append(users, user)
 	}
-	return &admin.SearchBlockUserResp{Total: total, Users: users}, nil
+	return &admin.SearchBlockUserResp{Total: uint32(total), Users: users}, nil
 }
 
 func (o *adminServer) FindUserBlockInfo(ctx context.Context, req *admin.FindUserBlockInfoReq) (*admin.FindUserBlockInfoResp, error) {
-	defer log.ZDebug(ctx, "return")
 	if _, err := mctx.CheckAdmin(ctx); err != nil {
 		return nil, err
 	}

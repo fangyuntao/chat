@@ -19,13 +19,11 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/OpenIMSDK/protocol/constant"
-	"github.com/OpenIMSDK/tools/errs"
-	"github.com/OpenIMSDK/tools/log"
-
-	constant2 "github.com/OpenIMSDK/chat/pkg/common/constant"
-	"github.com/OpenIMSDK/chat/pkg/eerrs"
-	"github.com/OpenIMSDK/chat/pkg/proto/chat"
+	"github.com/openimsdk/chat/pkg/common/constant"
+	"github.com/openimsdk/chat/pkg/eerrs"
+	"github.com/openimsdk/chat/pkg/protocol/chat"
+	constantpb "github.com/openimsdk/protocol/constant"
+	"github.com/openimsdk/tools/errs"
 )
 
 type CallbackBeforeAddFriendReq struct {
@@ -43,23 +41,21 @@ func (c CallbackCommand) GetCallbackCommand() string {
 }
 
 func (o *chatSvr) OpenIMCallback(ctx context.Context, req *chat.OpenIMCallbackReq) (*chat.OpenIMCallbackResp, error) {
-	defer log.ZDebug(ctx, "return")
 	switch req.Command {
-	case constant.CallbackBeforeAddFriendCommand:
+	case constantpb.CallbackBeforeAddFriendCommand:
 		var data CallbackBeforeAddFriendReq
 		if err := json.Unmarshal([]byte(req.Body), &data); err != nil {
 			return nil, errs.Wrap(err)
 		}
-		user, err := o.Database.GetAttribute(ctx, data.ToUserID)
+		user, err := o.Database.TakeAttributeByUserID(ctx, data.ToUserID)
 		if err != nil {
 			return nil, err
 		}
-		log.ZInfo(ctx, "OpenIMCallback", "user", user)
-		if user.AllowAddFriend != constant2.OrdinaryUserAddFriendEnable {
-			return nil, eerrs.ErrRefuseFriend.Wrap(fmt.Sprintf("state %d", user.AllowAddFriend))
+		if user.AllowAddFriend != constant.OrdinaryUserAddFriendEnable {
+			return nil, eerrs.ErrRefuseFriend.WrapMsg(fmt.Sprintf("state %d", user.AllowAddFriend))
 		}
 		return &chat.OpenIMCallbackResp{}, nil
 	default:
-		return nil, errs.ErrArgs.Wrap(fmt.Sprintf("invalid command %s", req.Command))
+		return nil, errs.ErrArgs.WrapMsg(fmt.Sprintf("invalid command %s", req.Command))
 	}
 }

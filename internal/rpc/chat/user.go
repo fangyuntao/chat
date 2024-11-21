@@ -16,98 +16,184 @@ package chat
 
 import (
 	"context"
-	"github.com/OpenIMSDK/chat/pkg/common/db/dbutil"
-	chat2 "github.com/OpenIMSDK/chat/pkg/common/db/table/chat"
-	constant2 "github.com/OpenIMSDK/protocol/constant"
-	"github.com/OpenIMSDK/tools/mcontext"
+	"errors"
+	"github.com/openimsdk/chat/pkg/eerrs"
+	"github.com/openimsdk/protocol/wrapperspb"
+	"github.com/openimsdk/tools/utils/stringutil"
+	"strconv"
+	"strings"
 	"time"
 
-	"github.com/OpenIMSDK/chat/pkg/common/constant"
-	"github.com/OpenIMSDK/chat/pkg/common/mctx"
-	"github.com/OpenIMSDK/chat/pkg/eerrs"
-	"github.com/OpenIMSDK/chat/pkg/proto/chat"
-	"github.com/OpenIMSDK/tools/errs"
-	"github.com/OpenIMSDK/tools/log"
+	"github.com/openimsdk/chat/pkg/common/db/dbutil"
+	chatdb "github.com/openimsdk/chat/pkg/common/db/table/chat"
+	constantpb "github.com/openimsdk/protocol/constant"
+	"github.com/openimsdk/tools/log"
+	"github.com/openimsdk/tools/mcontext"
+	"go.mongodb.org/mongo-driver/mongo"
+
+	"github.com/openimsdk/chat/pkg/common/constant"
+	"github.com/openimsdk/chat/pkg/common/mctx"
+	"github.com/openimsdk/chat/pkg/protocol/chat"
+	"github.com/openimsdk/tools/errs"
 )
 
+func (o *chatSvr) checkUpdateInfo(ctx context.Context, req *chat.UpdateUserInfoReq) error {
+	if req.AreaCode != nil || req.PhoneNumber != nil {
+		if !(req.AreaCode != nil && req.PhoneNumber != nil) {
+			return errs.ErrArgs.WrapMsg("areaCode and phoneNumber must be set together")
+		}
+		if req.AreaCode.Value == "" || req.PhoneNumber.Value == "" {
+			if req.AreaCode.Value != req.PhoneNumber.Value {
+				return errs.ErrArgs.WrapMsg("areaCode and phoneNumber must be set together")
+			}
+		}
+	}
+	if req.UserID == "" {
+		return errs.ErrArgs.WrapMsg("user id is empty")
+	}
+
+	credentials, err := o.Database.TakeCredentialsByUserID(ctx, req.UserID)
+	if err != nil {
+		return err
+	} else if len(credentials) == 0 {
+		return errs.ErrArgs.WrapMsg("user not found")
+	}
+	var (
+		credNum, delNum, addNum = len(credentials), 0, 0
+	)
+
+	addFunc := func(s *wrapperspb.StringValue) {
+		if s != nil {
+			if s.Value != "" {
+				addNum++
+			}
+		}
+	}
+
+	for _, s := range []*wrapperspb.StringValue{req.Account, req.PhoneNumber, req.Email} {
+		addFunc(s)
+	}
+
+	for _, credential := range credentials {
+		switch credential.Type {
+		case constant.CredentialAccount:
+			if req.Account != nil {
+				if req.Account.Value == credential.Account {
+					req.Account = nil
+				} else if req.Account.Value == "" {
+					delNum += 1
+				}
+			}
+		case constant.CredentialPhone:
+			if req.PhoneNumber != nil {
+				phoneAccount := BuildCredentialPhone(req.AreaCode.Value, req.PhoneNumber.Value)
+				if phoneAccount == credential.Account {
+					req.AreaCode = nil
+					req.PhoneNumber = nil
+				} else if req.PhoneNumber.Value == "" {
+					delNum += 1
+				}
+			}
+		case constant.CredentialEmail:
+			if req.Email != nil {
+				if req.Email.Value == credential.Account {
+					req.Email = nil
+				} else if req.Email.Value == "" {
+					delNum += 1
+				}
+			}
+		}
+	}
+
+	if addNum+credNum-delNum <= 0 {
+		return errs.ErrArgs.WrapMsg("a login method must exist")
+	}
+
+	if req.PhoneNumber.GetValue() != "" {
+		if !strings.HasPrefix(req.AreaCode.GetValue(), "+") {
+			req.AreaCode.Value = "+" + req.AreaCode.Value
+		}
+		if _, err := strconv.ParseUint(req.AreaCode.Value[1:], 10, 64); err != nil {
+			return errs.ErrArgs.WrapMsg("area code must be number")
+		}
+		if _, err := strconv.ParseUint(req.PhoneNumber.GetValue(), 10, 64); err != nil {
+			return errs.ErrArgs.WrapMsg("phone number must be number")
+		}
+		_, err := o.Database.TakeCredentialByAccount(ctx, BuildCredentialPhone(req.AreaCode.GetValue(), req.PhoneNumber.GetValue()))
+		if err == nil {
+			return eerrs.ErrPhoneAlreadyRegister.Wrap()
+		} else if !dbutil.IsDBNotFound(err) {
+			return err
+		}
+	}
+	if req.Account.GetValue() != "" {
+		if !stringutil.IsAlphanumeric(req.Account.GetValue()) {
+			return errs.ErrArgs.WrapMsg("account must be alphanumeric")
+		}
+		_, err := o.Database.TakeCredentialByAccount(ctx, req.Account.GetValue())
+		if err == nil {
+			return eerrs.ErrAccountAlreadyRegister.Wrap()
+		} else if !dbutil.IsDBNotFound(err) {
+			return err
+		}
+	}
+	if req.Email.GetValue() != "" {
+		if !stringutil.IsValidEmail(req.Email.GetValue()) {
+			return errs.ErrArgs.WrapMsg("invalid email")
+		}
+		_, err := o.Database.TakeCredentialByAccount(ctx, req.Email.GetValue())
+		if err == nil {
+			return eerrs.ErrEmailAlreadyRegister.Wrap()
+		} else if !dbutil.IsDBNotFound(err) {
+			return err
+		}
+	}
+	return nil
+}
+
 func (o *chatSvr) UpdateUserInfo(ctx context.Context, req *chat.UpdateUserInfoReq) (*chat.UpdateUserInfoResp, error) {
-	defer log.ZDebug(ctx, "return")
-	resp := &chat.UpdateUserInfoResp{}
 	opUserID, userType, err := mctx.Check(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if req.UserID == "" {
-		return nil, errs.ErrArgs.Wrap("user id is empty")
+
+	if err = o.checkUpdateInfo(ctx, req); err != nil {
+		return nil, err
 	}
+
 	switch userType {
 	case constant.NormalUser:
-		//if req.UserID == "" {
-		//	req.UserID = opUserID
-		//}
+		if req.RegisterType != nil {
+			return nil, errs.ErrNoPermission.WrapMsg("registerType can not be updated")
+		}
 		if req.UserID != opUserID {
-			return nil, errs.ErrNoPermission.Wrap("only admin can update other user info")
+			return nil, errs.ErrNoPermission.WrapMsg("only admin can update other user info")
 		}
-		if req.AreaCode != nil {
-			return nil, errs.ErrNoPermission.Wrap("areaCode can not be updated")
-		}
-		if req.PhoneNumber != nil {
-			return nil, errs.ErrNoPermission.Wrap("phoneNumber can not be updated")
-		}
-		if req.Account != nil {
-			return nil, errs.ErrNoPermission.Wrap("account can not be updated")
-		}
-		if req.Level != nil {
-			return nil, errs.ErrNoPermission.Wrap("level can not be updated")
-		}
+
 	case constant.AdminUser:
 	default:
-		return nil, errs.ErrNoPermission.Wrap("user type error")
+		return nil, errs.ErrNoPermission.WrapMsg("user type error")
 	}
+
 	update, err := ToDBAttributeUpdate(req)
 	if err != nil {
 		return nil, err
 	}
-	attribute, err := o.Database.TakeAttributeByUserID(ctx, req.UserID)
+	credUpdate, credDel, err := ToDBCredentialUpdate(req, true)
 	if err != nil {
 		return nil, err
 	}
-	if req.Account != nil && req.Account.Value != attribute.Account {
-		_, err := o.Database.TakeAttributeByAccount(ctx, req.Account.Value)
-		if err == nil {
-			return nil, eerrs.ErrAccountAlreadyRegister.Wrap()
-		} else if !o.Database.IsNotFound(err) {
+	if len(update) > 0 {
+		if err := o.Database.UpdateUseInfo(ctx, req.UserID, update, credUpdate, credDel); err != nil {
 			return nil, err
 		}
 	}
-	if req.AreaCode != nil || req.PhoneNumber != nil {
-		areaCode := attribute.AreaCode
-		phoneNumber := attribute.PhoneNumber
-		if req.AreaCode != nil {
-			areaCode = req.AreaCode.Value
-		}
-		if req.PhoneNumber != nil {
-			phoneNumber = req.PhoneNumber.Value
-		}
-		if attribute.AreaCode != areaCode || attribute.PhoneNumber != phoneNumber {
-			_, err := o.Database.TakeAttributeByPhone(ctx, areaCode, phoneNumber)
-			if err == nil {
-				return nil, eerrs.ErrAccountAlreadyRegister.Wrap()
-			} else if !o.Database.IsNotFound(err) {
-				return nil, err
-			}
-		}
-	}
-	if err := o.Database.UpdateUseInfo(ctx, req.UserID, update); err != nil {
-		return nil, err
-	}
-	return resp, nil
+	return &chat.UpdateUserInfoResp{}, nil
 }
 
 func (o *chatSvr) FindUserPublicInfo(ctx context.Context, req *chat.FindUserPublicInfoReq) (*chat.FindUserPublicInfoResp, error) {
-	defer log.ZDebug(ctx, "return")
 	if len(req.UserIDs) == 0 {
-		return nil, errs.ErrArgs.Wrap("UserIDs is empty")
+		return nil, errs.ErrArgs.WrapMsg("UserIDs is empty")
 	}
 	attributes, err := o.Database.FindAttribute(ctx, req.UserIDs)
 	if err != nil {
@@ -123,7 +209,7 @@ func (o *chatSvr) AddUserAccount(ctx context.Context, req *chat.AddUserAccountRe
 		return nil, err
 	}
 
-	if err := o.checkTheUniqueness(ctx, req); err != nil {
+	if err := o.checkRegisterInfo(ctx, req.User, true); err != nil {
 		return nil, err
 	}
 
@@ -133,7 +219,7 @@ func (o *chatSvr) AddUserAccount(ctx context.Context, req *chat.AddUserAccountRe
 			_, err := o.Database.GetUser(ctx, userID)
 			if err == nil {
 				continue
-			} else if dbutil.IsGormNotFound(err) {
+			} else if dbutil.IsDBNotFound(err) {
 				req.User.UserID = userID
 				break
 			} else {
@@ -141,27 +227,65 @@ func (o *chatSvr) AddUserAccount(ctx context.Context, req *chat.AddUserAccountRe
 			}
 		}
 		if req.User.UserID == "" {
-			return nil, errs.ErrInternalServer.Wrap("gen user id failed")
+			return nil, errs.ErrInternalServer.WrapMsg("gen user id failed")
+		}
+	} else {
+		_, err := o.Database.GetUser(ctx, req.User.UserID)
+		if err == nil {
+			return nil, errs.ErrArgs.WrapMsg("appoint user id already register")
+		} else if !dbutil.IsDBNotFound(err) {
+			return nil, err
 		}
 	}
 
-	register := &chat2.Register{
+	var (
+		credentials []*chatdb.Credential
+	)
+
+	if req.User.PhoneNumber != "" {
+		credentials = append(credentials, &chatdb.Credential{
+			UserID:      req.User.UserID,
+			Account:     BuildCredentialPhone(req.User.AreaCode, req.User.PhoneNumber),
+			Type:        constant.CredentialPhone,
+			AllowChange: true,
+		})
+	}
+
+	if req.User.Account != "" {
+		credentials = append(credentials, &chatdb.Credential{
+			UserID:      req.User.UserID,
+			Account:     req.User.Account,
+			Type:        constant.CredentialAccount,
+			AllowChange: true,
+		})
+	}
+
+	if req.User.Email != "" {
+		credentials = append(credentials, &chatdb.Credential{
+			UserID:      req.User.UserID,
+			Account:     req.User.Email,
+			Type:        constant.CredentialEmail,
+			AllowChange: true,
+		})
+	}
+
+	register := &chatdb.Register{
 		UserID:      req.User.UserID,
 		DeviceID:    req.DeviceID,
 		IP:          req.Ip,
-		Platform:    constant2.PlatformID2Name[int(req.Platform)],
+		Platform:    constantpb.PlatformID2Name[int(req.Platform)],
 		AccountType: "",
 		Mode:        constant.UserMode,
 		CreateTime:  time.Now(),
 	}
-	account := &chat2.Account{
+	account := &chatdb.Account{
 		UserID:         req.User.UserID,
 		Password:       req.User.Password,
 		OperatorUserID: mcontext.GetOpUserID(ctx),
 		ChangeTime:     register.CreateTime,
 		CreateTime:     register.CreateTime,
 	}
-	attribute := &chat2.Attribute{
+	attribute := &chatdb.Attribute{
 		UserID:         req.User.UserID,
 		Account:        req.User.Account,
 		PhoneNumber:    req.User.PhoneNumber,
@@ -178,35 +302,32 @@ func (o *chatSvr) AddUserAccount(ctx context.Context, req *chat.AddUserAccountRe
 		AllowAddFriend: constant.DefaultAllowAddFriend,
 	}
 
-	if err := o.Database.RegisterUser(ctx, register, account, attribute); err != nil {
+	if err := o.Database.RegisterUser(ctx, register, account, attribute, credentials); err != nil {
 		return nil, err
 	}
-
 	return &chat.AddUserAccountResp{}, nil
 }
 
 func (o *chatSvr) SearchUserPublicInfo(ctx context.Context, req *chat.SearchUserPublicInfoReq) (*chat.SearchUserPublicInfoResp, error) {
-	defer log.ZDebug(ctx, "return")
 	if _, _, err := mctx.Check(ctx); err != nil {
 		return nil, err
 	}
-	total, list, err := o.Database.Search(ctx, constant.FinDAllUser, req.Keyword, req.Genders, req.Pagination.PageNumber, req.Pagination.ShowNumber)
+	total, list, err := o.Database.Search(ctx, constant.FinDAllUser, req.Keyword, req.Genders, req.Pagination)
 	if err != nil {
 		return nil, err
 	}
 	return &chat.SearchUserPublicInfoResp{
-		Total: total,
+		Total: uint32(total),
 		Users: DbToPbAttributes(list),
 	}, nil
 }
 
 func (o *chatSvr) FindUserFullInfo(ctx context.Context, req *chat.FindUserFullInfoReq) (*chat.FindUserFullInfoResp, error) {
-	defer log.ZDebug(ctx, "return")
 	if _, _, err := mctx.Check(ctx); err != nil {
 		return nil, err
 	}
 	if len(req.UserIDs) == 0 {
-		return nil, errs.ErrArgs.Wrap("UserIDs is empty")
+		return nil, errs.ErrArgs.WrapMsg("UserIDs is empty")
 	}
 	attributes, err := o.Database.FindAttribute(ctx, req.UserIDs)
 	if err != nil {
@@ -219,20 +340,19 @@ func (o *chatSvr) SearchUserFullInfo(ctx context.Context, req *chat.SearchUserFu
 	if _, _, err := mctx.Check(ctx); err != nil {
 		return nil, err
 	}
-	total, list, err := o.Database.Search(ctx, req.Normal, req.Keyword, req.Genders, req.Pagination.PageNumber, req.Pagination.ShowNumber)
+	total, list, err := o.Database.Search(ctx, req.Normal, req.Keyword, req.Genders, req.Pagination)
 	if err != nil {
 		return nil, err
 	}
 	return &chat.SearchUserFullInfoResp{
-		Total: total,
+		Total: uint32(total),
 		Users: DbToPbUserFullInfos(list),
 	}, nil
 }
 
 func (o *chatSvr) FindUserAccount(ctx context.Context, req *chat.FindUserAccountReq) (*chat.FindUserAccountResp, error) {
-	defer log.ZDebug(ctx, "return")
 	if len(req.UserIDs) == 0 {
-		return nil, errs.ErrArgs.Wrap("user id list must be set")
+		return nil, errs.ErrArgs.WrapMsg("user id list must be set")
 	}
 	if _, _, err := mctx.CheckAdminOrUser(ctx); err != nil {
 		return nil, err
@@ -249,9 +369,8 @@ func (o *chatSvr) FindUserAccount(ctx context.Context, req *chat.FindUserAccount
 }
 
 func (o *chatSvr) FindAccountUser(ctx context.Context, req *chat.FindAccountUserReq) (*chat.FindAccountUserResp, error) {
-	defer log.ZDebug(ctx, "return")
 	if len(req.Accounts) == 0 {
-		return nil, errs.ErrArgs.Wrap("account list must be set")
+		return nil, errs.ErrArgs.WrapMsg("account list must be set")
 	}
 	if _, _, err := mctx.CheckAdminOrUser(ctx); err != nil {
 		return nil, err
@@ -271,31 +390,60 @@ func (o *chatSvr) SearchUserInfo(ctx context.Context, req *chat.SearchUserInfoRe
 	if _, _, err := mctx.Check(ctx); err != nil {
 		return nil, err
 	}
-	total, list, err := o.Database.SearchUser(ctx, req.Keyword, req.UserIDs, req.Genders, req.Pagination.PageNumber, req.Pagination.ShowNumber)
+	total, list, err := o.Database.SearchUser(ctx, req.Keyword, req.UserIDs, req.Genders, req.Pagination)
 	if err != nil {
 		return nil, err
 	}
 	return &chat.SearchUserInfoResp{
-		Total: total,
+		Total: uint32(total),
 		Users: DbToPbUserFullInfos(list),
 	}, nil
 }
 
-func (o *chatSvr) checkTheUniqueness(ctx context.Context, req *chat.AddUserAccountReq) error {
+func (o *chatSvr) CheckUserExist(ctx context.Context, req *chat.CheckUserExistReq) (resp *chat.CheckUserExistResp, err error) {
+	if req.User == nil {
+		return nil, errs.ErrArgs.WrapMsg("user is nil")
+	}
 	if req.User.PhoneNumber != "" {
-		_, err := o.Database.TakeAttributeByPhone(ctx, req.User.AreaCode, req.User.PhoneNumber)
-		if err == nil {
-			return eerrs.ErrPhoneAlreadyRegister.Wrap()
-		} else if !o.Database.IsNotFound(err) {
-			return err
+		account, err := o.Database.TakeCredentialByAccount(ctx, BuildCredentialPhone(req.User.AreaCode, req.User.PhoneNumber))
+		// err != nil is not found User
+		if err != nil && !errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, err
 		}
-	} else {
-		_, err := o.Database.TakeAttributeByEmail(ctx, req.User.Email)
-		if err == nil {
-			return eerrs.ErrEmailAlreadyRegister.Wrap()
-		} else if !o.Database.IsNotFound(err) {
-			return err
+		if account != nil {
+			log.ZDebug(ctx, "Check Number is ", account.Account)
+			log.ZDebug(ctx, "Check userID is ", account.UserID)
+			return &chat.CheckUserExistResp{Userid: account.UserID, IsRegistered: true}, nil
 		}
 	}
-	return nil
+	if req.User.Email != "" {
+		account, err := o.Database.TakeCredentialByAccount(ctx, req.User.AreaCode)
+		if err != nil && !errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, err
+		}
+		if account != nil {
+			log.ZDebug(ctx, "Check email is ", account.Account)
+			log.ZDebug(ctx, "Check userID is ", account.UserID)
+			return &chat.CheckUserExistResp{Userid: account.UserID, IsRegistered: true}, nil
+		}
+	}
+	if req.User.Account != "" {
+		account, err := o.Database.TakeCredentialByAccount(ctx, req.User.Account)
+		if err != nil && !errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, err
+		}
+		if account != nil {
+			log.ZDebug(ctx, "Check account is ", account.Account)
+			log.ZDebug(ctx, "Check userID is ", account.UserID)
+			return &chat.CheckUserExistResp{Userid: account.UserID, IsRegistered: true}, nil
+		}
+	}
+	return nil, nil
+}
+
+func (o *chatSvr) DelUserAccount(ctx context.Context, req *chat.DelUserAccountReq) (resp *chat.DelUserAccountResp, err error) {
+	if err := o.Database.DelUserAccount(ctx, req.UserIDs); err != nil && errs.Unwrap(err) != mongo.ErrNoDocuments {
+		return nil, err
+	}
+	return nil, nil
 }

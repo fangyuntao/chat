@@ -16,101 +16,69 @@ package admin
 
 import (
 	"context"
-	"crypto/md5"
-	"encoding/hex"
-	"github.com/OpenIMSDK/chat/pkg/common/constant"
-	"time"
 
-	"github.com/OpenIMSDK/tools/log"
-
-	"github.com/OpenIMSDK/chat/pkg/common/config"
-	"github.com/OpenIMSDK/chat/pkg/common/db/table/admin"
-	"github.com/OpenIMSDK/tools/errs"
-	"gorm.io/gorm"
+	"github.com/openimsdk/chat/pkg/common/constant"
+	admindb "github.com/openimsdk/chat/pkg/common/db/table/admin"
+	"github.com/openimsdk/tools/db/mongoutil"
+	"github.com/openimsdk/tools/db/pagination"
+	"github.com/openimsdk/tools/errs"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-func NewAdmin(db *gorm.DB) *Admin {
-	return &Admin{
-		db: db,
+func NewAdmin(db *mongo.Database) (admindb.AdminInterface, error) {
+	coll := db.Collection("admin")
+	_, err := coll.Indexes().CreateOne(context.Background(), mongo.IndexModel{
+		Keys: bson.D{
+			{Key: "account", Value: 1},
+		},
+		Options: options.Index().SetUnique(true),
+	})
+	if err != nil {
+		return nil, errs.Wrap(err)
 	}
+	return &Admin{
+		coll: coll,
+	}, nil
 }
 
 type Admin struct {
-	db *gorm.DB
+	coll *mongo.Collection
 }
 
-func (o *Admin) Take(ctx context.Context, account string) (*admin.Admin, error) {
-	var a admin.Admin
-	return &a, errs.Wrap(o.db.WithContext(ctx).Where("account = ?", account).Take(&a).Error)
+func (o *Admin) Take(ctx context.Context, account string) (*admindb.Admin, error) {
+	return mongoutil.FindOne[*admindb.Admin](ctx, o.coll, bson.M{"account": account})
 }
 
-func (o *Admin) TakeUserID(ctx context.Context, userID string) (*admin.Admin, error) {
-	var a admin.Admin
-	return &a, errs.Wrap(o.db.WithContext(ctx).Where("user_id = ?", userID).Take(&a).Error)
+func (o *Admin) TakeUserID(ctx context.Context, userID string) (*admindb.Admin, error) {
+	return mongoutil.FindOne[*admindb.Admin](ctx, o.coll, bson.M{"user_id": userID})
 }
 
 func (o *Admin) Update(ctx context.Context, account string, update map[string]any) error {
-	return errs.Wrap(o.db.WithContext(ctx).Model(&admin.Admin{}).Where("user_id = ?", account).Updates(update).Error)
+	if len(update) == 0 {
+		return nil
+	}
+	return mongoutil.UpdateOne(ctx, o.coll, bson.M{"user_id": account}, bson.M{"$set": update}, false)
 }
 
-func (o *Admin) Create(ctx context.Context, admin *admin.Admin) error {
-	return errs.Wrap(o.db.WithContext(ctx).Create(&admin).Error)
+func (o *Admin) Create(ctx context.Context, admins []*admindb.Admin) error {
+	return mongoutil.InsertMany(ctx, o.coll, admins)
 }
 
 func (o *Admin) ChangePassword(ctx context.Context, userID string, newPassword string) error {
-	return errs.Wrap(o.db.WithContext(ctx).Model(&admin.Admin{}).Where("user_id=?", userID).Update("password", newPassword).Error)
+	return mongoutil.UpdateOne(ctx, o.coll, bson.M{"user_id": userID}, bson.M{"$set": bson.M{"password": newPassword}}, false)
 }
 
 func (o *Admin) Delete(ctx context.Context, userIDs []string) error {
-	return errs.Wrap(o.db.WithContext(ctx).Where("user_id in ?", userIDs).Delete(&admin.Admin{}).Error)
-}
-
-func (o *Admin) Search(ctx context.Context, page, size int32) (uint32, []*admin.Admin, error) {
-	var count int64
-	var admins []*admin.Admin
-	if err := o.db.WithContext(ctx).Model(&admin.Admin{}).Where("level=?", constant.NormalAdmin).Count(&count).Error; err != nil {
-		return 0, nil, errs.Wrap(err)
-	}
-	offset := (page - 1) * size
-	if err := o.db.WithContext(ctx).Order("create_time desc").Offset(int(offset)).Where("level=?", constant.NormalAdmin).Limit(int(size)).Find(&admins).Error; err != nil {
-		return 0, nil, errs.Wrap(err)
-	}
-	return uint32(count), admins, nil
-}
-
-func (o *Admin) InitAdmin(ctx context.Context) error {
-	var count int64
-	if err := o.db.WithContext(ctx).Model(&admin.Admin{}).Count(&count).Error; err != nil {
-		return errs.Wrap(err)
-	}
-	if count > 0 {
-		log.ZInfo(ctx, "Admins are already registered in database", "admin count", count)
+	if len(userIDs) == 0 {
 		return nil
 	}
-	if len(config.Config.AdminList) == 0 {
-		log.ZInfo(ctx, "AdminList is empty", "adminList", config.Config.AdminList)
-		return nil
-	}
-	now := time.Now()
-	admins := make([]*admin.Admin, 0, len(config.Config.AdminList))
-	for _, adminChat := range config.Config.AdminList {
-		password := md5.Sum([]byte(adminChat.AdminID))
-		table := admin.Admin{
-			Account:    adminChat.AdminID,
-			UserID:     adminChat.ImAdminID,
-			Password:   hex.EncodeToString(password[:]),
-			Level:      100,
-			CreateTime: now,
-		}
-		if adminChat.NickName != "" {
-			table.Nickname = adminChat.NickName
-		} else {
-			table.Nickname = adminChat.AdminID
-		}
-		admins = append(admins, &table)
-	}
-	if err := o.db.WithContext(ctx).Create(&admins).Error; err != nil {
-		return errs.Wrap(err)
-	}
-	return nil
+	return mongoutil.DeleteMany(ctx, o.coll, bson.M{"user_id": bson.M{"$in": userIDs}})
+}
+
+func (o *Admin) Search(ctx context.Context, pagination pagination.Pagination) (int64, []*admindb.Admin, error) {
+	opt := options.Find().SetSort(bson.D{{Key: "create_time", Value: -1}})
+	filter := bson.M{"level": constant.NormalAdmin}
+	return mongoutil.FindPage[*admindb.Admin](ctx, o.coll, filter, pagination, opt)
 }

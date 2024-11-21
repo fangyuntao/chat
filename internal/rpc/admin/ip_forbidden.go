@@ -18,26 +18,22 @@ import (
 	"context"
 	"time"
 
-
-	"github.com/OpenIMSDK/tools/log"
-
-	admin2 "github.com/OpenIMSDK/chat/pkg/common/db/table/admin"
-	"github.com/OpenIMSDK/chat/pkg/common/mctx"
-	"github.com/OpenIMSDK/chat/pkg/proto/admin"
+	admindb "github.com/openimsdk/chat/pkg/common/db/table/admin"
+	"github.com/openimsdk/chat/pkg/common/mctx"
+	"github.com/openimsdk/chat/pkg/protocol/admin"
 )
 
 func (o *adminServer) SearchIPForbidden(ctx context.Context, req *admin.SearchIPForbiddenReq) (*admin.SearchIPForbiddenResp, error) {
-	defer log.ZDebug(ctx, "return")
 	if _, err := mctx.CheckAdmin(ctx); err != nil {
 		return nil, err
 	}
-	total, forbiddens, err := o.Database.SearchIPForbidden(ctx, req.Keyword, req.Status, req.Pagination.PageNumber, req.Pagination.ShowNumber)
+	total, forbiddens, err := o.Database.SearchIPForbidden(ctx, req.Keyword, req.Status, req.Pagination)
 	if err != nil {
 		return nil, err
 	}
 	resp := &admin.SearchIPForbiddenResp{
 		Forbiddens: make([]*admin.IPForbidden, 0, len(forbiddens)),
-		Total:      total,
+		Total:      uint32(total),
 	}
 	for _, forbidden := range forbiddens {
 		resp.Forbiddens = append(resp.Forbiddens, &admin.IPForbidden{
@@ -51,14 +47,13 @@ func (o *adminServer) SearchIPForbidden(ctx context.Context, req *admin.SearchIP
 }
 
 func (o *adminServer) AddIPForbidden(ctx context.Context, req *admin.AddIPForbiddenReq) (*admin.AddIPForbiddenResp, error) {
-	defer log.ZDebug(ctx, "return")
 	if _, err := mctx.CheckAdmin(ctx); err != nil {
 		return nil, err
 	}
 	now := time.Now()
-	tables := make([]*admin2.IPForbidden, 0, len(req.Forbiddens))
+	tables := make([]*admindb.IPForbidden, 0, len(req.Forbiddens))
 	for _, forbidden := range req.Forbiddens {
-		tables = append(tables, &admin2.IPForbidden{
+		tables = append(tables, &admindb.IPForbidden{
 			IP:            forbidden.Ip,
 			LimitLogin:    forbidden.LimitLogin,
 			LimitRegister: forbidden.LimitRegister,
@@ -72,7 +67,6 @@ func (o *adminServer) AddIPForbidden(ctx context.Context, req *admin.AddIPForbid
 }
 
 func (o *adminServer) DelIPForbidden(ctx context.Context, req *admin.DelIPForbiddenReq) (*admin.DelIPForbiddenResp, error) {
-	defer log.ZDebug(ctx, "return")
 	if _, err := mctx.CheckAdmin(ctx); err != nil {
 		return nil, err
 	}

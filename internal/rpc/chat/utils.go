@@ -1,27 +1,20 @@
-// Copyright © 2023 OpenIM open source community. All rights reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 package chat
 
 import (
-	"github.com/OpenIMSDK/tools/utils"
-
-	"github.com/OpenIMSDK/chat/pkg/common/db/table/chat"
-	"github.com/OpenIMSDK/chat/pkg/proto/common"
+	"context"
+	"github.com/openimsdk/chat/pkg/common/db/dbutil"
+	table "github.com/openimsdk/chat/pkg/common/db/table/chat"
+	"github.com/openimsdk/chat/pkg/eerrs"
+	"github.com/openimsdk/chat/pkg/protocol/chat"
+	"github.com/openimsdk/chat/pkg/protocol/common"
+	"github.com/openimsdk/tools/errs"
+	"github.com/openimsdk/tools/utils/datautil"
+	"github.com/openimsdk/tools/utils/stringutil"
+	"strconv"
+	"strings"
 )
 
-func DbToPbAttribute(attribute *chat.Attribute) *common.UserPublicInfo {
+func DbToPbAttribute(attribute *table.Attribute) *common.UserPublicInfo {
 	if attribute == nil {
 		return nil
 	}
@@ -36,11 +29,11 @@ func DbToPbAttribute(attribute *chat.Attribute) *common.UserPublicInfo {
 	}
 }
 
-func DbToPbAttributes(attributes []*chat.Attribute) []*common.UserPublicInfo {
-	return utils.Slice(attributes, DbToPbAttribute)
+func DbToPbAttributes(attributes []*table.Attribute) []*common.UserPublicInfo {
+	return datautil.Slice(attributes, DbToPbAttribute)
 }
 
-func DbToPbUserFullInfo(attribute *chat.Attribute) *common.UserFullInfo {
+func DbToPbUserFullInfo(attribute *table.Attribute) *common.UserFullInfo {
 	return &common.UserFullInfo{
 		UserID:           attribute.UserID,
 		Password:         "",
@@ -61,24 +54,59 @@ func DbToPbUserFullInfo(attribute *chat.Attribute) *common.UserFullInfo {
 	}
 }
 
-func DbToPbUserFullInfos(attributes []*chat.Attribute) []*common.UserFullInfo {
-	return utils.Slice(attributes, DbToPbUserFullInfo)
+func DbToPbUserFullInfos(attributes []*table.Attribute) []*common.UserFullInfo {
+	return datautil.Slice(attributes, DbToPbUserFullInfo)
 }
 
-func DbToPbLogInfo(log *chat.Log) *common.LogInfo {
-	return &common.LogInfo{
-		Filename:   log.FileName,
-		UserID:     log.UserID,
-		Platform:   utils.StringToInt32(log.Platform),
-		Url:        log.Url,
-		CreateTime: log.CreateTime.UnixMilli(),
-		LogID:      log.LogID,
-		SystemType: log.SystemType,
-		Version:    log.Version,
-		Ex:         log.Ex,
+func BuildCredentialPhone(areaCode, phone string) string {
+	return areaCode + " " + phone
+}
+
+func (o *chatSvr) checkRegisterInfo(ctx context.Context, user *chat.RegisterUserInfo, isAdmin bool) error {
+	if user == nil {
+		return errs.ErrArgs.WrapMsg("user is nil")
 	}
-}
-
-func DbToPbLogInfos(logs []*chat.Log) []*common.LogInfo {
-	return utils.Slice(logs, DbToPbLogInfo)
+	if user.Email == "" && !(user.PhoneNumber != "" && user.AreaCode != "") && (!isAdmin || user.Account == "") {
+		return errs.ErrArgs.WrapMsg("at least one valid account is required")
+	}
+	if user.PhoneNumber != "" {
+		if !strings.HasPrefix(user.AreaCode, "+") {
+			user.AreaCode = "+" + user.AreaCode
+		}
+		if _, err := strconv.ParseUint(user.AreaCode[1:], 10, 64); err != nil {
+			return errs.ErrArgs.WrapMsg("area code must be number")
+		}
+		if _, err := strconv.ParseUint(user.PhoneNumber, 10, 64); err != nil {
+			return errs.ErrArgs.WrapMsg("phone number must be number")
+		}
+		_, err := o.Database.TakeAttributeByPhone(ctx, user.AreaCode, user.PhoneNumber)
+		if err == nil {
+			return eerrs.ErrPhoneAlreadyRegister.Wrap()
+		} else if !dbutil.IsDBNotFound(err) {
+			return err
+		}
+	}
+	if user.Account != "" {
+		if !stringutil.IsAlphanumeric(user.Account) {
+			return errs.ErrArgs.WrapMsg("account must be alphanumeric")
+		}
+		_, err := o.Database.TakeAttributeByAccount(ctx, user.Account)
+		if err == nil {
+			return eerrs.ErrAccountAlreadyRegister.Wrap()
+		} else if !dbutil.IsDBNotFound(err) {
+			return err
+		}
+	}
+	if user.Email != "" {
+		if !stringutil.IsValidEmail(user.Email) {
+			return errs.ErrArgs.WrapMsg("invalid email")
+		}
+		_, err := o.Database.TakeAttributeByAccount(ctx, user.Email)
+		if err == nil {
+			return eerrs.ErrEmailAlreadyRegister.Wrap()
+		} else if !dbutil.IsDBNotFound(err) {
+			return err
+		}
+	}
+	return nil
 }

@@ -17,16 +17,13 @@ package admin
 import (
 	"context"
 
-	"github.com/OpenIMSDK/tools/log"
+	"github.com/openimsdk/tools/errs"
 
-	"github.com/OpenIMSDK/tools/errs"
-
-	"github.com/OpenIMSDK/chat/pkg/common/mctx"
-	"github.com/OpenIMSDK/chat/pkg/proto/admin"
+	"github.com/openimsdk/chat/pkg/common/mctx"
+	"github.com/openimsdk/chat/pkg/protocol/admin"
 )
 
 func (o *adminServer) GetClientConfig(ctx context.Context, req *admin.GetClientConfigReq) (*admin.GetClientConfigResp, error) {
-	defer log.ZDebug(ctx, "return")
 	conf, err := o.Database.GetConfig(ctx)
 	if err != nil {
 		return nil, err
@@ -35,12 +32,11 @@ func (o *adminServer) GetClientConfig(ctx context.Context, req *admin.GetClientC
 }
 
 func (o *adminServer) SetClientConfig(ctx context.Context, req *admin.SetClientConfigReq) (*admin.SetClientConfigResp, error) {
-	defer log.ZDebug(ctx, "return")
 	if _, err := mctx.CheckAdmin(ctx); err != nil {
 		return nil, err
 	}
 	if len(req.Config) == 0 {
-		return nil, errs.ErrArgs.Wrap("update config empty")
+		return nil, errs.ErrArgs.WrapMsg("update config empty")
 	}
 	if err := o.Database.SetConfig(ctx, req.Config); err != nil {
 		return nil, err
@@ -49,7 +45,6 @@ func (o *adminServer) SetClientConfig(ctx context.Context, req *admin.SetClientC
 }
 
 func (o *adminServer) DelClientConfig(ctx context.Context, req *admin.DelClientConfigReq) (*admin.DelClientConfigResp, error) {
-	defer log.ZDebug(ctx, "return")
 	if _, err := mctx.CheckAdmin(ctx); err != nil {
 		return nil, err
 	}

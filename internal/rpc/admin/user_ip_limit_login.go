@@ -18,28 +18,24 @@ import (
 	"context"
 	"time"
 
+	"github.com/openimsdk/tools/utils/datautil"
 
-	"github.com/OpenIMSDK/tools/log"
-
-	"github.com/OpenIMSDK/tools/errs"
-	"github.com/OpenIMSDK/tools/utils"
-
-	admin2 "github.com/OpenIMSDK/chat/pkg/common/db/table/admin"
-	"github.com/OpenIMSDK/chat/pkg/common/mctx"
-	"github.com/OpenIMSDK/chat/pkg/proto/admin"
+	admindb "github.com/openimsdk/chat/pkg/common/db/table/admin"
+	"github.com/openimsdk/chat/pkg/common/mctx"
+	"github.com/openimsdk/chat/pkg/protocol/admin"
+	"github.com/openimsdk/tools/errs"
 )
 
 func (o *adminServer) SearchUserIPLimitLogin(ctx context.Context, req *admin.SearchUserIPLimitLoginReq) (*admin.SearchUserIPLimitLoginResp, error) {
-	defer log.ZDebug(ctx, "return")
 	if _, err := mctx.CheckAdmin(ctx); err != nil {
 		return nil, err
 	}
-	total, list, err := o.Database.SearchUserLimitLogin(ctx, req.Keyword, req.Pagination.PageNumber, req.Pagination.ShowNumber)
+	total, list, err := o.Database.SearchUserLimitLogin(ctx, req.Keyword, req.Pagination)
 	if err != nil {
 		return nil, err
 	}
-	userIDs := utils.Slice(list, func(info *admin2.LimitUserLoginIP) string { return info.UserID })
-	userMap, err := o.Chat.MapUserPublicInfo(ctx, utils.Distinct(userIDs))
+	userIDs := datautil.Slice(list, func(info *admindb.LimitUserLoginIP) string { return info.UserID })
+	userMap, err := o.Chat.MapUserPublicInfo(ctx, datautil.Distinct(userIDs))
 	if err != nil {
 		return nil, err
 	}
@@ -52,21 +48,20 @@ func (o *adminServer) SearchUserIPLimitLogin(ctx context.Context, req *admin.Sea
 			User:       userMap[info.UserID],
 		})
 	}
-	return &admin.SearchUserIPLimitLoginResp{Total: total, Limits: limits}, nil
+	return &admin.SearchUserIPLimitLoginResp{Total: uint32(total), Limits: limits}, nil
 }
 
 func (o *adminServer) AddUserIPLimitLogin(ctx context.Context, req *admin.AddUserIPLimitLoginReq) (*admin.AddUserIPLimitLoginResp, error) {
-	defer log.ZDebug(ctx, "return")
 	if _, err := mctx.CheckAdmin(ctx); err != nil {
 		return nil, err
 	}
 	if len(req.Limits) == 0 {
-		return nil, errs.ErrArgs.Wrap("limits is empty")
+		return nil, errs.ErrArgs.WrapMsg("limits is empty")
 	}
 	now := time.Now()
-	ts := make([]*admin2.LimitUserLoginIP, 0, len(req.Limits))
+	ts := make([]*admindb.LimitUserLoginIP, 0, len(req.Limits))
 	for _, limit := range req.Limits {
-		ts = append(ts, &admin2.LimitUserLoginIP{
+		ts = append(ts, &admindb.LimitUserLoginIP{
 			UserID:     limit.UserID,
 			IP:         limit.Ip,
 			CreateTime: now,
@@ -83,14 +78,14 @@ func (o *adminServer) DelUserIPLimitLogin(ctx context.Context, req *admin.DelUse
 		return nil, err
 	}
 	if len(req.Limits) == 0 {
-		return nil, errs.ErrArgs.Wrap("limits is empty")
+		return nil, errs.ErrArgs.WrapMsg("limits is empty")
 	}
-	ts := make([]*admin2.LimitUserLoginIP, 0, len(req.Limits))
+	ts := make([]*admindb.LimitUserLoginIP, 0, len(req.Limits))
 	for _, limit := range req.Limits {
 		if limit.UserID == "" || limit.Ip == "" {
-			return nil, errs.ErrArgs.Wrap("user_id or ip is empty")
+			return nil, errs.ErrArgs.WrapMsg("user_id or ip is empty")
 		}
-		ts = append(ts, &admin2.LimitUserLoginIP{
+		ts = append(ts, &admindb.LimitUserLoginIP{
 			UserID: limit.UserID,
 			IP:     limit.Ip,
 		})

@@ -17,21 +17,14 @@ package chat
 import (
 	"context"
 
-	"github.com/OpenIMSDK/tools/discoveryregistry"
-
-	"github.com/OpenIMSDK/chat/pkg/common/config"
-	"github.com/OpenIMSDK/chat/pkg/common/mctx"
-	"github.com/OpenIMSDK/chat/pkg/eerrs"
-	"github.com/OpenIMSDK/chat/pkg/proto/admin"
+	"github.com/openimsdk/chat/pkg/common/mctx"
+	"github.com/openimsdk/chat/pkg/eerrs"
+	"github.com/openimsdk/chat/pkg/protocol/admin"
 )
 
-func NewAdminClient(discov discoveryregistry.SvcDiscoveryRegistry) *AdminClient {
-	conn, err := discov.GetConn(context.Background(), config.Config.RpcRegisterName.OpenImAdminName)
-	if err != nil {
-		panic(err)
-	}
+func NewAdminClient(client admin.AdminClient) *AdminClient {
 	return &AdminClient{
-		client: admin.NewAdminClient(conn),
+		client: client,
 	}
 }
 
@@ -108,4 +101,9 @@ func (o *AdminClient) GetDefaultGroupID(ctx context.Context) ([]string, error) {
 		return nil, err
 	}
 	return resp.GroupIDs, nil
+}
+
+func (o *AdminClient) InvalidateToken(ctx context.Context, userID string) error {
+	_, err := o.client.InvalidateToken(ctx, &admin.InvalidateTokenReq{UserID: userID})
+	return err
 }

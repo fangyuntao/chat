@@ -16,49 +16,45 @@ package admin
 
 import (
 	"context"
-	"strings"
+	"github.com/openimsdk/tools/utils/datautil"
 	"time"
 
-	"github.com/OpenIMSDK/tools/log"
+	"github.com/openimsdk/tools/errs"
 
-	"github.com/OpenIMSDK/tools/errs"
-	"github.com/OpenIMSDK/tools/utils"
-
-	admin2 "github.com/OpenIMSDK/chat/pkg/common/db/table/admin"
-	"github.com/OpenIMSDK/chat/pkg/common/mctx"
-	"github.com/OpenIMSDK/chat/pkg/proto/admin"
-	"github.com/OpenIMSDK/chat/pkg/proto/common"
+	admindb "github.com/openimsdk/chat/pkg/common/db/table/admin"
+	"github.com/openimsdk/chat/pkg/common/mctx"
+	"github.com/openimsdk/chat/pkg/protocol/admin"
+	"github.com/openimsdk/chat/pkg/protocol/common"
 )
 
 func (o *adminServer) AddDefaultFriend(ctx context.Context, req *admin.AddDefaultFriendReq) (*admin.AddDefaultFriendResp, error) {
-	defer log.ZDebug(ctx, "return")
 	if _, err := mctx.CheckAdmin(ctx); err != nil {
 		return nil, err
 	}
 	if len(req.UserIDs) == 0 {
-		return nil, errs.ErrArgs.Wrap("user ids is empty")
+		return nil, errs.ErrArgs.WrapMsg("user ids is empty")
 	}
-	if utils.Duplicate(req.UserIDs) {
-		return nil, errs.ErrArgs.Wrap("user ids is duplicate")
+	if datautil.Duplicate(req.UserIDs) {
+		return nil, errs.ErrArgs.WrapMsg("user ids is duplicate")
 	}
 	users, err := o.Chat.FindUserPublicInfo(ctx, req.UserIDs)
 	if err != nil {
 		return nil, err
 	}
-	if ids := utils.Single(req.UserIDs, utils.Slice(users, func(user *common.UserPublicInfo) string { return user.UserID })); len(ids) > 0 {
-		return nil, errs.ErrUserIDNotFound.Wrap(strings.Join(ids, ", "))
+	if ids := datautil.Single(req.UserIDs, datautil.Slice(users, func(user *common.UserPublicInfo) string { return user.UserID })); len(ids) > 0 {
+		return nil, errs.ErrRecordNotFound.WrapMsg("user id not found", "userID", ids)
 	}
 	exists, err := o.Database.FindDefaultFriend(ctx, req.UserIDs)
 	if err != nil {
 		return nil, err
 	}
 	if len(exists) > 0 {
-		return nil, errs.ErrDuplicateKey.Wrap(strings.Join(exists, ", "))
+		return nil, errs.ErrDuplicateKey.WrapMsg("user id existed", "userID", exists)
 	}
 	now := time.Now()
-	ms := make([]*admin2.RegisterAddFriend, 0, len(req.UserIDs))
+	ms := make([]*admindb.RegisterAddFriend, 0, len(req.UserIDs))
 	for _, userID := range req.UserIDs {
-		ms = append(ms, &admin2.RegisterAddFriend{
+		ms = append(ms, &admindb.RegisterAddFriend{
 			UserID:     userID,
 			CreateTime: now,
 		})
@@ -70,27 +66,26 @@ func (o *adminServer) AddDefaultFriend(ctx context.Context, req *admin.AddDefaul
 }
 
 func (o *adminServer) DelDefaultFriend(ctx context.Context, req *admin.DelDefaultFriendReq) (*admin.DelDefaultFriendResp, error) {
-	defer log.ZDebug(ctx, "return")
 	if _, err := mctx.CheckAdmin(ctx); err != nil {
 		return nil, err
 	}
 	if len(req.UserIDs) == 0 {
-		return nil, errs.ErrArgs.Wrap("user ids is empty")
+		return nil, errs.ErrArgs.WrapMsg("user ids is empty")
 	}
-	if utils.Duplicate(req.UserIDs) {
-		return nil, errs.ErrArgs.Wrap("user ids is duplicate")
+	if datautil.Duplicate(req.UserIDs) {
+		return nil, errs.ErrArgs.WrapMsg("user ids is duplicate")
 	}
 	exists, err := o.Database.FindDefaultFriend(ctx, req.UserIDs)
 	if err != nil {
 		return nil, err
 	}
-	if ids := utils.Single(req.UserIDs, exists); len(ids) > 0 {
-		return nil, errs.ErrUserIDNotFound.Wrap(strings.Join(ids, ", "))
+	if ids := datautil.Single(req.UserIDs, exists); len(ids) > 0 {
+		return nil, errs.ErrRecordNotFound.WrapMsg("user id not found", "userID", ids)
 	}
 	now := time.Now()
-	ms := make([]*admin2.RegisterAddFriend, 0, len(req.UserIDs))
+	ms := make([]*admindb.RegisterAddFriend, 0, len(req.UserIDs))
 	for _, userID := range req.UserIDs {
-		ms = append(ms, &admin2.RegisterAddFriend{
+		ms = append(ms, &admindb.RegisterAddFriend{
 			UserID:     userID,
 			CreateTime: now,
 		})
@@ -102,7 +97,6 @@ func (o *adminServer) DelDefaultFriend(ctx context.Context, req *admin.DelDefaul
 }
 
 func (o *adminServer) FindDefaultFriend(ctx context.Context, req *admin.FindDefaultFriendReq) (*admin.FindDefaultFriendResp, error) {
-	defer log.ZDebug(ctx, "return")
 	if _, _, err := mctx.Check(ctx); err != nil {
 		return nil, err
 	}
@@ -114,15 +108,14 @@ func (o *adminServer) FindDefaultFriend(ctx context.Context, req *admin.FindDefa
 }
 
 func (o *adminServer) SearchDefaultFriend(ctx context.Context, req *admin.SearchDefaultFriendReq) (*admin.SearchDefaultFriendResp, error) {
-	defer log.ZDebug(ctx, "return")
 	if _, err := mctx.CheckAdmin(ctx); err != nil {
 		return nil, err
 	}
-	total, infos, err := o.Database.SearchDefaultFriend(ctx, req.Keyword, req.Pagination.PageNumber, req.Pagination.ShowNumber)
+	total, infos, err := o.Database.SearchDefaultFriend(ctx, req.Keyword, req.Pagination)
 	if err != nil {
 		return nil, err
 	}
-	userIDs := utils.Slice(infos, func(info *admin2.RegisterAddFriend) string { return info.UserID })
+	userIDs := datautil.Slice(infos, func(info *admindb.RegisterAddFriend) string { return info.UserID })
 	userMap, err := o.Chat.MapUserPublicInfo(ctx, userIDs)
 	if err != nil {
 		return nil, err
@@ -136,5 +129,5 @@ func (o *adminServer) SearchDefaultFriend(ctx context.Context, req *admin.Search
 		}
 		attributes = append(attributes, attribute)
 	}
-	return &admin.SearchDefaultFriendResp{Total: total, Users: attributes}, nil
+	return &admin.SearchDefaultFriendResp{Total: uint32(total), Users: attributes}, nil
 }
